@@ -1,6 +1,9 @@
 package util
 
-import "sync"
+import (
+	"context"
+	"sync"
+)
 
 type Semaphore struct {
 	ch chan struct{}
@@ -16,6 +19,16 @@ func NewSemaphore(concurrency int) *Semaphore {
 func (s *Semaphore) Acquire() {
 	s.ch <- struct{}{}
 	s.wg.Add(1)
+}
+
+func (s *Semaphore) AcquireContext(ctx context.Context) bool {
+	select {
+	case s.ch <- struct{}{}:
+		s.wg.Add(1)
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 func (s *Semaphore) Release() {

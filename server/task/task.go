@@ -2,6 +2,7 @@ package task
 
 import (
 	"bufio"
+	"context"
 	"database/sql"
 	"encoding/base64"
 	"errors"
@@ -67,6 +68,9 @@ type Task struct {
 	AudioProgress float64 `json:"audioProgress"`
 	VideoProgress float64 `json:"videoProgress"`
 	MergeProgress float64 `json:"mergeProgress"`
+	ctx           context.Context
+	cancel        context.CancelFunc
+	done          chan struct{}
 }
 
 var GlobalTaskList = []*Task{}
@@ -104,7 +108,15 @@ func (task *Task) Start() {
 	if task.DownloadType == "" {
 		task.DownloadType = "merge"
 	}
+	task.ctx, task.cancel = context.WithCancel(context.Background())
+	task.done = make(chan struct{})
+	defer close(task.done)
 	GlobalTaskMux.Lock()
+	for index := len(GlobalTaskList) - 1; index >= 0; index-- {
+		if GlobalTaskList[index].ID == task.ID {
+			GlobalTaskList = append(GlobalTaskList[:index], GlobalTaskList[index+1:]...)
+		}
+	}
 	GlobalTaskList = append(GlobalTaskList, task)
 	GlobalTaskMux.Unlock()
 	db := util.MustGetDB()
@@ -116,7 +128,10 @@ func (task *Task) Start() {
 	}
 	client := &bilibili.BiliClient{SESSDATA: sessdata}
 
-	GlobalDownloadSem.Acquire()
+	if !GlobalDownloadSem.AcquireContext(task.ctx) {
+		task.UpdateStatus(db, "error", context.Canceled)
+		return
+	}
 	task.UpdateStatus(db, "running")
 
 	if task.DownloadType == "audio" {
@@ -128,9 +143,13 @@ func (task *Task) Start() {
 			return
 		}
 		GlobalDownloadSem.Release()
+		if task.ctx.Err() != nil {
+			task.UpdateStatus(db, "error", task.ctx.Err())
+			return
+		}
 		outputPath := task.TaskInDB.FilePath()
 		audioPath := filepath.Join(task.Folder, strconv.FormatInt(task.ID, 10)+".audio")
-		err = os.Rename(audioPath, outputPath)
+		err = replaceFile(audioPath, outputPath)
 		if err != nil {
 			task.UpdateStatus(db, "error", fmt.Errorf("os.Rename: %v", err))
 			return
@@ -138,6 +157,10 @@ func (task *Task) Start() {
 		// 添加元数据
 		if err := task.addMetadata(outputPath); err != nil {
 			log.Printf("添加元数据失败 (任务ID: %d): %v", task.ID, err)
+		}
+		if task.ctx.Err() != nil {
+			task.UpdateStatus(db, "error", task.ctx.Err())
+			return
 		}
 		task.UpdateStatus(db, "done")
 		return
@@ -150,9 +173,13 @@ func (task *Task) Start() {
 			return
 		}
 		GlobalDownloadSem.Release()
+		if task.ctx.Err() != nil {
+			task.UpdateStatus(db, "error", task.ctx.Err())
+			return
+		}
 		outputPath := task.TaskInDB.FilePath()
 		videoPath := filepath.Join(task.Folder, strconv.FormatInt(task.ID, 10)+".video")
-		err = os.Rename(videoPath, outputPath)
+		err = replaceFile(videoPath, outputPath)
 		if err != nil {
 			task.UpdateStatus(db, "error", fmt.Errorf("os.Rename: %v", err))
 			return
@@ -160,6 +187,10 @@ func (task *Task) Start() {
 		// 添加元数据
 		if err := task.addMetadata(outputPath); err != nil {
 			log.Printf("添加元数据失败 (任务ID: %d): %v", task.ID, err)
+		}
+		if task.ctx.Err() != nil {
+			task.UpdateStatus(db, "error", task.ctx.Err())
+			return
 		}
 		task.UpdateStatus(db, "done")
 		return
@@ -178,15 +209,27 @@ func (task *Task) Start() {
 			return
 		}
 		GlobalDownloadSem.Release()
-
+		if task.ctx.Err() != nil {
+			task.UpdateStatus(db, "error", task.ctx.Err())
+			return
+		}
 		outputPath := task.TaskInDB.FilePath()
 		videoPath := filepath.Join(task.Folder, strconv.FormatInt(task.ID, 10)+".video")
 		audioPath := filepath.Join(task.Folder, strconv.FormatInt(task.ID, 10)+".audio")
-		GlobalMergeSem.Acquire()
-		err = task.MergeMedia(outputPath, videoPath, audioPath)
+		mergedPath := filepath.Join(task.Folder, strconv.FormatInt(task.ID, 10)+".merge")
+		if !GlobalMergeSem.AcquireContext(task.ctx) {
+			task.UpdateStatus(db, "error", context.Canceled)
+			return
+		}
+		err = task.MergeMedia(mergedPath, videoPath, audioPath)
 		if err != nil {
 			GlobalMergeSem.Release()
 			task.UpdateStatus(db, "error", fmt.Errorf("task.MergeMedia: %v", err))
+			return
+		}
+		if err = replaceFile(mergedPath, outputPath); err != nil {
+			GlobalMergeSem.Release()
+			task.UpdateStatus(db, "error", fmt.Errorf("replaceFile: %v", err))
 			return
 		}
 		err = os.Remove(videoPath)
@@ -206,6 +249,10 @@ func (task *Task) Start() {
 		if err := task.addMetadata(outputPath); err != nil {
 			log.Printf("添加元数据失败 (任务ID: %d): %v", task.ID, err)
 		}
+		if task.ctx.Err() != nil {
+			task.UpdateStatus(db, "error", task.ctx.Err())
+			return
+		}
 		task.UpdateStatus(db, "done")
 	}
 }
@@ -222,7 +269,7 @@ func (task *Task) MergeMedia(outputPath string, inputPaths ...string) error {
 		return err
 	}
 
-	cmd := exec.Command(ffmpegPath, append(inputs, "-c:v", "copy", "-c:a", "copy", "-progress", "pipe:1", "-strict", "-2", outputPath)...)
+	cmd := exec.CommandContext(task.ctx, ffmpegPath, append(inputs, "-c:v", "copy", "-c:a", "copy", "-progress", "pipe:1", "-strict", "-2", "-y", outputPath)...)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -292,7 +339,7 @@ func (task *Task) UpdateStatus(db *sql.DB, status TaskStatus, errs ...error) err
 	_, err := db.Exec(`UPDATE "task" SET "status" = ? WHERE "id" = ?`, status, task.ID)
 	util.SqliteLock.Unlock()
 	if err != nil {
-		return nil
+		return err
 	}
 	for _, err := range errs {
 		if err != nil {
@@ -310,7 +357,7 @@ func DownloadMedia(client *bilibili.BiliClient, _url string, task *Task, mediaTy
 	var resp *http.Response
 	var err error
 	for i := 0; i < 5; i++ {
-		resp, err = client.SimpleGET(_url, nil)
+		resp, err = client.SimpleGETContext(task.ctx, _url, nil)
 		if err == nil {
 			break
 		}
@@ -319,6 +366,7 @@ func DownloadMedia(client *bilibili.BiliClient, _url string, task *Task, mediaTy
 	if err != nil {
 		return err
 	}
+	defer resp.Body.Close()
 
 	filename := strconv.FormatInt(task.ID, 10) + "." + mediaType
 	filepath := filepath.Join(task.Folder, filename)
@@ -416,14 +464,14 @@ func GetTaskList(db *sql.DB, page int, pageSize int) ([]TaskInDB, error) {
 	return tasks, nil
 }
 
-func DeleteTask(db *sql.DB, taskID int) error {
+func DeleteTask(db *sql.DB, taskID int64) error {
 	util.SqliteLock.Lock()
 	_, err := db.Exec(`DELETE FROM "task" WHERE "id" = ?`, taskID)
 	util.SqliteLock.Unlock()
 	return err
 }
 
-func GetTask(db *sql.DB, taskID int) (*TaskInDB, error) {
+func GetTask(db *sql.DB, taskID int64) (*TaskInDB, error) {
 	task := TaskInDB{}
 	createAt := ""
 	util.SqliteLock.Lock()
@@ -476,7 +524,7 @@ func (task *Task) addMetadata(filePath string) error {
 	tempPath := filePath + ".tmp.mp4"
 
 	// 使用双引号包裹文件路径，避免特殊字符
-	cmd := exec.Command(ffmpegPath,
+	cmd := exec.CommandContext(task.ctx, ffmpegPath,
 		"-i", filePath,
 		"-metadata", "description="+desc,
 		"-metadata", "artist="+author,
@@ -498,4 +546,112 @@ func (task *Task) addMetadata(filePath string) error {
 	}
 
 	return nil
+}
+
+func DeleteAllTasks(db *sql.DB) (int64, error) {
+	util.SqliteLock.Lock()
+	result, err := db.Exec(`DELETE FROM "task"`)
+	util.SqliteLock.Unlock()
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+func (task *Task) Stop() {
+	if task.cancel != nil {
+		task.cancel()
+	}
+}
+
+func StopTask(taskID int64) bool {
+	GlobalTaskMux.Lock()
+	var activeTask *Task
+	for _, item := range GlobalTaskList {
+		if item.ID == taskID {
+			activeTask = item
+			break
+		}
+	}
+	GlobalTaskMux.Unlock()
+	if activeTask == nil {
+		return false
+	}
+	activeTask.Stop()
+	select {
+	case <-activeTask.done:
+		return true
+	case <-time.After(10 * time.Second):
+		return false
+	}
+}
+
+func StopAllTasks() {
+	GlobalTaskMux.Lock()
+	activeTasks := append([]*Task(nil), GlobalTaskList...)
+	GlobalTaskMux.Unlock()
+	for _, item := range activeTasks {
+		if item.Status == "waiting" || item.Status == "running" {
+			item.Stop()
+		}
+	}
+	for _, item := range activeTasks {
+		if item.done == nil || item.Status != "waiting" && item.Status != "running" {
+			continue
+		}
+		select {
+		case <-item.done:
+		case <-time.After(10 * time.Second):
+		}
+	}
+}
+
+func RemoveActiveTask(taskID int64) {
+	GlobalTaskMux.Lock()
+	defer GlobalTaskMux.Unlock()
+	for index := len(GlobalTaskList) - 1; index >= 0; index-- {
+		if GlobalTaskList[index].ID == taskID {
+			GlobalTaskList = append(GlobalTaskList[:index], GlobalTaskList[index+1:]...)
+		}
+	}
+}
+
+func ClearActiveTasks() {
+	GlobalTaskMux.Lock()
+	GlobalTaskList = []*Task{}
+	GlobalTaskMux.Unlock()
+}
+
+func replaceFile(sourcePath string, destinationPath string) error {
+	backupPath := destinationPath + ".restart-backup"
+	_ = os.Remove(backupPath)
+	if _, err := os.Stat(destinationPath); err == nil {
+		if err := os.Rename(destinationPath, backupPath); err != nil {
+			return err
+		}
+	}
+	if err := os.Rename(sourcePath, destinationPath); err != nil {
+		_ = os.Rename(backupPath, destinationPath)
+		return err
+	}
+	_ = os.Remove(backupPath)
+	return nil
+}
+
+func (task *Task) PrepareRestart(db *sql.DB) error {
+	util.SqliteLock.Lock()
+	_, err := db.Exec(`UPDATE "task" SET "format" = ?, "download_type" = ?, "status" = 'waiting' WHERE "id" = ?`,
+		task.Format, task.DownloadType, task.ID)
+	util.SqliteLock.Unlock()
+	return err
+}
+
+func DeleteTasksByStatus(db *sql.DB, status TaskStatus) (int64, error) {
+	util.SqliteLock.Lock()
+	result, err := db.Exec(`DELETE FROM "task" WHERE "status" = ?`, status)
+	util.SqliteLock.Unlock()
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }

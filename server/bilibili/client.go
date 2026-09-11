@@ -1,6 +1,7 @@
 package bilibili
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,10 @@ type BiliClient struct {
 
 // SimpleGET 简单的 GET 请求
 func (client *BiliClient) SimpleGET(_url string, params map[string]string) (*http.Response, error) {
+	return client.SimpleGETContext(context.Background(), _url, params)
+}
+
+func (client *BiliClient) SimpleGETContext(ctx context.Context, _url string, params map[string]string) (*http.Response, error) {
 	values := url.Values{}
 	for k, v := range params {
 		values.Set(k, v)
@@ -26,7 +31,7 @@ func (client *BiliClient) SimpleGET(_url string, params map[string]string) (*htt
 			Proxy: http.ProxyURL(nil),
 		},
 	}
-	request, err := http.NewRequest("GET", _url+"?"+values.Encode(), nil)
+	request, err := http.NewRequestWithContext(ctx, "GET", _url+"?"+values.Encode(), nil)
 	if err != nil {
 		return nil, err
 	}

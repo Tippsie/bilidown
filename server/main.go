@@ -24,7 +24,7 @@ const (
 	VERSION   = "v2.1.1" // 软件版本号，将影响托盘标题显示
 )
 
-var urlLocal = fmt.Sprintf("http://127.0.0.1:%d", HTTP_PORT)
+var urlLocal = fmt.Sprintf("http://localhost:%d", HTTP_PORT)
 var urlLocalUnix = fmt.Sprintf("%s?___%d", urlLocal, time.Now().UnixMilli())
 
 func main() {

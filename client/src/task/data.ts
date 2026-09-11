@@ -68,7 +68,34 @@ type ActiveTask = {
     duration: number
 }
 
-export const deleteTask = async (id: number) => {
-    const res = await fetch(`/api/deleteTask?id=${id}`).then(res => res.json()) as ResJSON
+const postTaskAction = async (path: string): Promise<number> => {
+    const res = await fetch(path, { method: 'POST' }).then(res => res.json()) as ResJSON<number>
     if (!res.success) throw new Error(res.message)
+    return res.data
+}
+
+export const clearFinishedTasks = () => postTaskAction('/api/clearFinishedTasks')
+
+export const stopTask = (id: number) => postTaskAction(`/api/stopTask?id=${id}`)
+
+export const deleteTask = (id: number) => postTaskAction(`/api/deleteTask?id=${id}`)
+
+export const deleteAllTasks = () => postTaskAction('/api/deleteAllTasks')
+
+export type RestartTaskData = {
+    id: number
+    format: VideoFormat
+    audio: string
+    video: string
+    downloadType: 'audio' | 'video' | 'merge'
+}
+
+export const restartTasks = async (tasks: RestartTaskData[]): Promise<number> => {
+    const res = await fetch('/api/restartTasks', {
+        method: 'POST',
+        body: JSON.stringify(tasks),
+        headers: { 'Content-Type': 'application/json' }
+    }).then(res => res.json()) as ResJSON<number>
+    if (!res.success) throw new Error(res.message)
+    return res.data
 }

@@ -1,15 +1,14 @@
 package router
 
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"os/exec"
 	"runtime"
 	"strconv"
 
+	"bilidown/common"
 	"bilidown/task"
 	"bilidown/util"
 )
@@ -132,36 +131,151 @@ func showFile(w http.ResponseWriter, r *http.Request) {
 	util.Res{Success: true, Message: "操作成功"}.Write(w)
 }
 
-func deleteTask(w http.ResponseWriter, r *http.Request) {
-	taskIDStr := r.FormValue("id")
-	taskID, err := strconv.Atoi(taskIDStr)
+func clearFinishedTasks(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		util.Res{Success: false, Message: "不支持的请求方法"}.Write(w)
+		return
+	}
+	db := util.MustGetDB()
+	defer db.Close()
+	count, err := task.DeleteTasksByStatus(db, "done")
+	if err != nil {
+		util.Res{Success: false, Message: fmt.Sprintf("清除已完成任务失败: %v", err)}.Write(w)
+		return
+	}
+	util.Res{Success: true, Message: fmt.Sprintf("已清除 %d 个已完成任务", count), Data: count}.Write(w)
+}
+
+func restartTasks(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		util.Res{Success: false, Message: "不支持的请求方法"}.Write(w)
+		return
+	}
+	db := util.MustGetDB()
+	defer db.Close()
+
+	var body []struct {
+		ID           int64              `json:"id"`
+		Format       common.MediaFormat `json:"format"`
+		Audio        string             `json:"audio"`
+		Video        string             `json:"video"`
+		DownloadType string             `json:"downloadType"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body) == 0 {
+		util.Res{Success: false, Message: "参数错误"}.Write(w)
+		return
+	}
+	preparedTasks := make([]*task.Task, 0, len(body))
+	for _, option := range body {
+		item, err := task.GetTask(db, option.ID)
+		if err != nil || item.Status != "error" && item.Status != "done" {
+			util.Res{Success: false, Message: fmt.Sprintf("任务 %d 不存在或无法重启", option.ID)}.Write(w)
+			return
+		}
+		if !util.IsValidFormatCode(option.Format) ||
+			(option.DownloadType != "audio" && option.DownloadType != "video" && option.DownloadType != "merge") {
+			util.Res{Success: false, Message: fmt.Sprintf("任务 %d 的下载设置无效", option.ID)}.Write(w)
+			return
+		}
+		if option.DownloadType != "video" && !util.IsValidURL(option.Audio) {
+			util.Res{Success: false, Message: fmt.Sprintf("任务 %d 的音频地址无效", option.ID)}.Write(w)
+			return
+		}
+		if option.DownloadType != "audio" && !util.IsValidURL(option.Video) {
+			util.Res{Success: false, Message: fmt.Sprintf("任务 %d 的视频地址无效", option.ID)}.Write(w)
+			return
+		}
+		item.Format = option.Format
+		item.Audio = option.Audio
+		item.Video = option.Video
+		item.DownloadType = option.DownloadType
+		item.Status = "waiting"
+		preparedTasks = append(preparedTasks, &task.Task{TaskInDB: *item})
+	}
+	for _, restartedTask := range preparedTasks {
+		if err := restartedTask.PrepareRestart(db); err != nil {
+			util.Res{Success: false, Message: fmt.Sprintf("更新任务 %d 状态失败: %v", restartedTask.ID, err)}.Write(w)
+			return
+		}
+		go restartedTask.Start()
+	}
+	util.Res{Success: true, Message: fmt.Sprintf("已重启 %d 个任务", len(preparedTasks)), Data: len(preparedTasks)}.Write(w)
+}
+
+func stopTask(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		util.Res{Success: false, Message: "不支持的请求方法"}.Write(w)
+		return
+	}
+	taskID, err := strconv.ParseInt(r.FormValue("id"), 10, 64)
 	if err != nil {
 		util.Res{Success: false, Message: "参数错误"}.Write(w)
 		return
 	}
 	db := util.MustGetDB()
 	defer db.Close()
-
-	_task, err := task.GetTask(db, taskID)
-	if err == sql.ErrNoRows {
-		util.Res{Success: true, Message: "数据库中没有该条记录，所以本次操作被忽略，可以算作成功。"}.Write(w)
-		return
-	}
+	item, err := task.GetTask(db, taskID)
 	if err != nil {
-		util.Res{Success: false, Message: fmt.Sprintf("task.GetTask: %v", err)}.Write(w)
+		util.Res{Success: false, Message: "任务不存在"}.Write(w)
 		return
 	}
-	filePath := _task.FilePath()
-	err = os.Remove(filePath)
-	if err != nil && !os.IsNotExist(err) {
-		util.Res{Success: false, Message: fmt.Sprintf("文件删除失败 os.Remove: %v", err)}.Write(w)
+	if item.Status == "done" {
+		util.Res{Success: false, Message: "已完成任务无法停止"}.Write(w)
 		return
 	}
+	if item.Status != "error" && !task.StopTask(taskID) {
+		util.Res{Success: false, Message: "任务未能及时停止"}.Write(w)
+		return
+	}
+	if err := (&task.Task{TaskInDB: *item}).UpdateStatus(db, "error"); err != nil {
+		util.Res{Success: false, Message: fmt.Sprintf("停止任务失败: %v", err)}.Write(w)
+		return
+	}
+	util.Res{Success: true, Message: "任务已停止"}.Write(w)
+}
 
-	err = task.DeleteTask(db, taskID)
-	if err != nil {
-		util.Res{Success: false, Message: fmt.Sprintf("task.DeleteTask: %v", err)}.Write(w)
+func deleteTask(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		util.Res{Success: false, Message: "不支持的请求方法"}.Write(w)
 		return
 	}
-	util.Res{Success: true, Message: "删除成功"}.Write(w)
+	taskID, err := strconv.ParseInt(r.FormValue("id"), 10, 64)
+	if err != nil {
+		util.Res{Success: false, Message: "参数错误"}.Write(w)
+		return
+	}
+	db := util.MustGetDB()
+	defer db.Close()
+	item, err := task.GetTask(db, taskID)
+	if err != nil {
+		util.Res{Success: false, Message: "任务不存在"}.Write(w)
+		return
+	}
+	if (item.Status == "waiting" || item.Status == "running") && !task.StopTask(taskID) {
+		util.Res{Success: false, Message: "任务未能及时停止"}.Write(w)
+		return
+	}
+	if err := task.DeleteTask(db, taskID); err != nil {
+		util.Res{Success: false, Message: fmt.Sprintf("删除任务失败: %v", err)}.Write(w)
+		return
+	}
+	task.RemoveActiveTask(taskID)
+	util.Res{Success: true, Message: "任务已删除，下载文件已保留"}.Write(w)
+}
+
+func deleteAllTasks(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		util.Res{Success: false, Message: "不支持的请求方法"}.Write(w)
+		return
+	}
+	task.StopAllTasks()
+	db := util.MustGetDB()
+	defer db.Close()
+	count, err := task.DeleteAllTasks(db)
+	if err != nil {
+		util.Res{Success: false, Message: fmt.Sprintf("删除全部任务失败: %v", err)}.Write(w)
+		return
+	}
+	task.ClearActiveTasks()
+	util.Res{Success: true, Message: fmt.Sprintf("已删除 %d 个任务，下载文件已保留", count), Data: count}.Write(w)
 }

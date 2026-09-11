@@ -11,7 +11,7 @@ type Option = {
     workRoute: WorkRoute
 }
 
-const videoFormatMap: Record<VideoFormat, string> = {
+export const videoFormatMap: Record<VideoFormat, string> = {
     127: "超高清 8K",
     126: "杜比视界",
     125: "真彩 HDR",
@@ -311,7 +311,7 @@ export class ParseModalComp implements VanComponent {
     }
 }
 
-const getAudioURL = (playInfo: PlayInfo, preferHiRes: boolean = true): string => {
+export const getAudioURL = (playInfo: PlayInfo, preferHiRes: boolean = true): string => {
     if (preferHiRes && playInfo.dash.flac) {
         return playInfo.dash.flac.audio.baseUrl
     } else {
@@ -319,7 +319,7 @@ const getAudioURL = (playInfo: PlayInfo, preferHiRes: boolean = true): string =>
     }
 }
 
-const getActiveFormatVideo = (playInfo: PlayInfo, format: VideoFormat, preferredCodec: 12 | 7 | 13 = 12): { video: string, width: number, height: number } => {
+export const getActiveFormatVideo = (playInfo: PlayInfo, format: VideoFormat, preferredCodec: 12 | 7 | 13 = 12): { video: string, width: number, height: number } => {
     // 优先级顺序：用户首选编码格式，然后按默认优先级 12 > 7 > 13
     const codecOrder = [preferredCodec, 12, 7, 13].filter((value, index, self) => self.indexOf(value) === index)
     for (const code of codecOrder) {
