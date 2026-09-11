@@ -6,7 +6,7 @@
 
 此分支fork自 [iuroc/bilidown](https://github.com/iuroc/bilidown).
 
-关于bilidown的具体功能和开发详见原说明文档[Readme](https://github.com/iuroc/bilidown/README.md)
+关于bilidown的具体功能和开发详见原说明文档 [Readme](https://github.com/iuroc/bilidown/blob/main/README.md)
 
 若无特殊说明，本repo相关开发与功能使用均可沿用原repo环境。
 
@@ -28,5 +28,5 @@
 - 清除或删除任务时只移除任务记录，保留磁盘中的下载文件；原有会同时删除媒体文件的操作已移除（考虑是否恢复）。
 - 失败和已完成的任务均可直接重启，无需返回解析页面剔除已完成视频。重启时会重新获取有效的 B 站媒体地址，并打开批量下载对话框，可选择任务、清晰度、下载类型、视频编码和 Hi-Res 音频。
 - 支持停止正在等待或下载的任务，取消操作覆盖任务队列、HTTP 下载和 FFmpeg 处理阶段（不建议在ffmpeg阶段停止）。
-- 重启已完成任务时，通过备份并替换的方式安全更新原有输出文件。
+- 重启已完成任务时，通过备份并替换的方式安全更新原有下载文件。
 - 本地页面和开发代理统一使用 `http://localhost:8098`，改善从 WSL 访问 Windows 浏览器的体验。
