@@ -238,6 +238,7 @@ export type TaskInitData = {
     bvid: string
     cid: number
     format: number
+    collectionTitle: string
     title: string
     owner: string
     cover: string

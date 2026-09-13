@@ -1,5 +1,5 @@
 import van, { State } from 'vanjs-core'
-import { VanComponent, formatSeconds } from '../../mixin'
+import { VanComponent } from '../../mixin'
 import { PageInParseResult, PlayInfo, VideoFormat } from '../type'
 import { WorkRoute } from '..'
 import { createTask, getPlayInfo } from '../data'
@@ -135,35 +135,17 @@ export class ParseModalComp implements VanComponent {
         this.downloadBtnDisabled.val = true
         // 需要传递给服务器，需要创建下载任务的数据列表
         createTask(selectedPlayInfos.map(info => {
-            const badgeNotNum = !info.page.badge.match(/^\d+$/)
-            const isVideoMode = workRoute.videoInfoCardMode.val == 'video'
             const cardTitle = workRoute.videoInfoCardData.val.title
             const owner = workRoute.videoInfoCardData.val.staff.length > 0
                 ? workRoute.videoInfoCardData.val.staff[0].split("[")[0].trim()
                 : workRoute.videoInfoCardData.val.owner.name.trim()
             const activeVideoInfo = getActiveFormatVideo(info.info!, info.info!.accept_quality[info.formatIndex.val], this.preferredCodec.val)
-            const pagesLength = workRoute.videoInfoCardData.val.pages.length
-
             return ({
                 bvid: info.page.bvid,
                 cid: info.page.cid,
                 cover: workRoute.videoInfoCardData.val.cover,
-                title: (badgeNotNum
-                    ? [
-                        info.page.part.trim(),
-                        `[${info.page.badge.trim()}]`,
-                        `[${cardTitle.trim()}]`,
-                        `[${videoFormatMap[info.info!.accept_quality[info.formatIndex.val]]}]`,
-                        `[${formatSeconds(info.info!.dash.duration)}]`
-                    ]
-                    : [
-                        pagesLength == 1 ? workRoute.allSection.val[workRoute.sectionTabsActiveIndex.val].title : `[${cardTitle.trim()}]`,
-                        workRoute.sectionPages.val.length == 1 ? '' : `[${info.page.badge.trim()}]`,
-                        info.page.part.trim(),
-                        isVideoMode ? `[${owner}]` : '',
-                        `[${videoFormatMap[info.info!.accept_quality[info.formatIndex.val]]}]`,
-                        `[${formatSeconds(info.info!.dash.duration)}]`
-                    ]).filter(p => p).join(' '),
+                collectionTitle: cardTitle.trim(),
+                title: `[${info.page.badge.trim()}] ${info.page.part.trim()}`,
                 format: info.info!.accept_quality[info.formatIndex.val],
                 owner,
                 audio: getAudioURL(info.info!, this.preferHiResAudio.val),

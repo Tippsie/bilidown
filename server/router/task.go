@@ -59,7 +59,9 @@ func createTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_task := task.Task{TaskInDB: item}
+		_task.CollectionTitle = util.FilterFileName(_task.CollectionTitle)
 		_task.Title = util.FilterFileName(_task.Title)
+		_task.Owner = util.FilterFileName(_task.Owner)
 		err = _task.Create(db)
 		if err != nil {
 			util.Res{Success: false, Message: fmt.Sprintf("_task.Create: %v.", err)}.Write(w)

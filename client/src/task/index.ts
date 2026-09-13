@@ -107,7 +107,10 @@ export class TaskRoute implements VanComponent {
                     () => div({ class: 'list-group', hidden: _that.loading.val },
                         _that.taskList.val.map(task => {
                             const ext = task.downloadType === 'audio' ? '.m4a' : '.mp4'
-                            const filename = `${task.title} ${btoa(task.id.toString()).replace(/=/g, '')}${ext}`
+                            const filename = task.collectionTitle ? `${task.title}${ext}` : `${task.cid}${task.title}${ext}`
+                            const downloadFolder = task.collectionTitle
+                                ? `${task.folder}/[${task.bvid}][${task.owner}] ${task.collectionTitle}`
+                                : `${task.folder}/${task.bvid}`
                             return div({
                                 class: 'list-group-item p-0 hstack user-select-none',
                             },
@@ -116,7 +119,7 @@ export class TaskRoute implements VanComponent {
                                     style: `cursor: pointer;`,
                                     onclick() {
                                         const src = `/api/downloadVideo?path=${encodeURIComponent(
-                                            `${task.folder}\\${filename}`
+                                            `${downloadFolder}/${filename}`
                                         )}`
                                         if (task.statusState.val != 'done') return
                                         _that.playerModalComp.open(src, task.title, task.downloadType === 'audio' ? 'audio' : 'video')
@@ -142,7 +145,7 @@ export class TaskRoute implements VanComponent {
                                         () => {
                                             if (task.statusState.val == 'waiting') return '等待下载'
                                             if (task.statusState.val == 'error') return '下载失败'
-                                            if (task.statusState.val == 'done') return task.folder
+                                            if (task.statusState.val == 'done') return downloadFolder
                                             if (task.videoProgress.val == 0) {
                                                 return `正在下载音频 (${(task.audioProgress.val * 100).toFixed(2)}%)`
                                             } else if (task.mergeProgress.val == 0) {
@@ -150,7 +153,7 @@ export class TaskRoute implements VanComponent {
                                             } else if (task.statusState.val == 'running') {
                                                 return `正在合并音视频 (${(task.mergeProgress.val * 100).toFixed(2)}%)`
                                             } else {
-                                                return task.folder
+                                                return downloadFolder
                                             }
                                         }
                                     ),
@@ -183,7 +186,7 @@ export class TaskRoute implements VanComponent {
                                     div({
                                         class: 'hover-btn', title: '打开文件位置',
                                         onclick() {
-                                            showFile(`${task.folder}\\${filename}`)
+                                            showFile(`${downloadFolder}/${filename}`)
                                             task.opening.val = true
                                             setTimeout(() => {
                                                 task.opening.val = false

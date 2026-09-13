@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"database/sql"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -15,7 +14,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -26,18 +24,19 @@ import (
 
 // TaskInitOption 创建任务时需要从 POST 请求获取的参数
 type TaskInitOption struct {
-	Bvid         string             `json:"bvid"`
-	Cid          int                `json:"cid"`
-	Format       common.MediaFormat `json:"format"`
-	Title        string             `json:"title"`
-	Owner        string             `json:"owner"`
-	Cover        string             `json:"cover"`
-	Status       TaskStatus         `json:"status"`
-	Folder       string             `json:"folder"`
-	Audio        string             `json:"audio"`
-	Video        string             `json:"video"`
-	Duration     int                `json:"duration"`
-	DownloadType string             `json:"downloadType"`
+	Bvid            string             `json:"bvid"`
+	Cid             int                `json:"cid"`
+	Format          common.MediaFormat `json:"format"`
+	CollectionTitle string             `json:"collectionTitle"`
+	Title           string             `json:"title"`
+	Owner           string             `json:"owner"`
+	Cover           string             `json:"cover"`
+	Status          TaskStatus         `json:"status"`
+	Folder          string             `json:"folder"`
+	Audio           string             `json:"audio"`
+	Video           string             `json:"video"`
+	Duration        int                `json:"duration"`
+	DownloadType    string             `json:"downloadType"`
 }
 
 // TaskInDB 任务数据库中的数据
@@ -52,12 +51,17 @@ func (task *TaskInDB) FilePath() string {
 	if task.DownloadType == "audio" {
 		ext = ".m4a"
 	}
-	return filepath.Join(task.Folder,
-		fmt.Sprintf("%s %s%s", task.Title,
-			strings.Replace(base64.StdEncoding.EncodeToString([]byte(strconv.FormatInt(task.ID, 10))), "=", "", -1),
-			ext,
-		),
-	)
+	if task.CollectionTitle == "" {
+		return filepath.Join(task.DownloadFolder(), fmt.Sprintf("%d%s%s", task.Cid, task.Title, ext))
+	}
+	return filepath.Join(task.DownloadFolder(), task.Title+ext)
+}
+
+func (task *TaskInDB) DownloadFolder() string {
+	if task.CollectionTitle == "" {
+		return filepath.Join(task.Folder, task.Bvid)
+	}
+	return filepath.Join(task.Folder, fmt.Sprintf("[%s][%s] %s", task.Bvid, task.Owner, task.CollectionTitle))
 }
 
 // done | waiting | running | error
@@ -80,11 +84,12 @@ var GlobalMergeSem = util.NewSemaphore(3)
 
 func (task *Task) Create(db *sql.DB) error {
 	util.SqliteLock.Lock()
-	result, err := db.Exec(`INSERT INTO "task" ("bvid", "cid", "format", "title", "owner", "cover", "status", "folder", "duration", "download_type")
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	result, err := db.Exec(`INSERT INTO "task" ("bvid", "cid", "format", "collection_title", "title", "owner", "cover", "status", "folder", "duration", "download_type")
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		task.Bvid,
 		task.Cid,
 		task.Format,
+		task.CollectionTitle,
 		task.Title,
 		task.Owner,
 		task.Cover,
@@ -121,6 +126,10 @@ func (task *Task) Start() {
 	GlobalTaskMux.Unlock()
 	db := util.MustGetDB()
 	defer db.Close()
+	if err := os.MkdirAll(task.DownloadFolder(), os.ModePerm); err != nil {
+		task.UpdateStatus(db, "error", fmt.Errorf("os.MkdirAll: %v", err))
+		return
+	}
 	sessdata, err := bilibili.GetSessdata(db)
 	if err != nil {
 		task.UpdateStatus(db, "error", fmt.Errorf("bilibili.GetSessdata: %v", err))
@@ -148,7 +157,7 @@ func (task *Task) Start() {
 			return
 		}
 		outputPath := task.TaskInDB.FilePath()
-		audioPath := filepath.Join(task.Folder, strconv.FormatInt(task.ID, 10)+".audio")
+		audioPath := filepath.Join(task.DownloadFolder(), strconv.FormatInt(task.ID, 10)+".audio")
 		err = replaceFile(audioPath, outputPath)
 		if err != nil {
 			task.UpdateStatus(db, "error", fmt.Errorf("os.Rename: %v", err))
@@ -178,7 +187,7 @@ func (task *Task) Start() {
 			return
 		}
 		outputPath := task.TaskInDB.FilePath()
-		videoPath := filepath.Join(task.Folder, strconv.FormatInt(task.ID, 10)+".video")
+		videoPath := filepath.Join(task.DownloadFolder(), strconv.FormatInt(task.ID, 10)+".video")
 		err = replaceFile(videoPath, outputPath)
 		if err != nil {
 			task.UpdateStatus(db, "error", fmt.Errorf("os.Rename: %v", err))
@@ -214,9 +223,9 @@ func (task *Task) Start() {
 			return
 		}
 		outputPath := task.TaskInDB.FilePath()
-		videoPath := filepath.Join(task.Folder, strconv.FormatInt(task.ID, 10)+".video")
-		audioPath := filepath.Join(task.Folder, strconv.FormatInt(task.ID, 10)+".audio")
-		mergedPath := filepath.Join(task.Folder, strconv.FormatInt(task.ID, 10)+".merge")
+		videoPath := filepath.Join(task.DownloadFolder(), strconv.FormatInt(task.ID, 10)+".video")
+		audioPath := filepath.Join(task.DownloadFolder(), strconv.FormatInt(task.ID, 10)+".audio")
+		mergedPath := filepath.Join(task.DownloadFolder(), strconv.FormatInt(task.ID, 10)+".merge.mp4")
 		if !GlobalMergeSem.AcquireContext(task.ctx) {
 			task.UpdateStatus(db, "error", context.Canceled)
 			return
@@ -369,7 +378,7 @@ func DownloadMedia(client *bilibili.BiliClient, _url string, task *Task, mediaTy
 	defer resp.Body.Close()
 
 	filename := strconv.FormatInt(task.ID, 10) + "." + mediaType
-	filepath := filepath.Join(task.Folder, filename)
+	filepath := filepath.Join(task.DownloadFolder(), filename)
 
 	progress := newProgressBar(resp.ContentLength)
 
@@ -424,7 +433,7 @@ func GetTaskList(db *sql.DB, page int, pageSize int) ([]TaskInDB, error) {
 	tasks := []TaskInDB{}
 	util.SqliteLock.Lock()
 	rows, err := db.Query(`SELECT
-		"id", "bvid", "cid", "format", "title",
+		"id", "bvid", "cid", "format", "collection_title", "title",
 		"owner", "cover", "status", "folder", "duration", "download_type", "create_at"
 	FROM "task" ORDER BY "id" DESC LIMIT ?, ?`,
 		page*pageSize, pageSize,
@@ -443,6 +452,7 @@ func GetTaskList(db *sql.DB, page int, pageSize int) ([]TaskInDB, error) {
 			&task.Bvid,
 			&task.Cid,
 			&task.Format,
+			&task.CollectionTitle,
 			&task.Title,
 			&task.Owner,
 			&task.Cover,
@@ -476,7 +486,7 @@ func GetTask(db *sql.DB, taskID int64) (*TaskInDB, error) {
 	createAt := ""
 	util.SqliteLock.Lock()
 	err := db.QueryRow(`SELECT
-		"id", "bvid", "cid", "format", "title",
+		"id", "bvid", "cid", "format", "collection_title", "title",
 		"owner", "cover", "status", "folder", "duration", "download_type", "create_at"
 	FROM "task" WHERE "id" = ?`,
 		taskID,
@@ -485,6 +495,7 @@ func GetTask(db *sql.DB, taskID int64) (*TaskInDB, error) {
 		&task.Bvid,
 		&task.Cid,
 		&task.Format,
+		&task.CollectionTitle,
 		&task.Title,
 		&task.Owner,
 		&task.Cover,

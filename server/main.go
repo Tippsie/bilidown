@@ -175,6 +175,7 @@ func mustInitTables() {
 		"bvid" text NOT NULL,
 		"cid" integer NOT NULL,
 		"format" integer NOT NULL,
+		"collection_title" text NOT NULL DEFAULT '',
 		"title" text NOT NULL,
 		"owner" text NOT NULL,
 		"cover" text NOT NULL,
@@ -208,6 +209,7 @@ func addMissingColumns(db *sql.DB) error {
 	// 使用事务确保操作原子性
 	util.SqliteLock.Lock()
 	_, _ = db.Exec(`ALTER TABLE "task" ADD COLUMN "download_type" TEXT DEFAULT 'merge'`)
+	_, _ = db.Exec(`ALTER TABLE "task" ADD COLUMN "collection_title" TEXT NOT NULL DEFAULT ''`)
 	// 将现有记录中的NULL值更新为默认值'merge'
 	_, _ = db.Exec(`UPDATE "task" SET "download_type" = 'merge' WHERE "download_type" IS NULL`)
 	util.SqliteLock.Unlock()
